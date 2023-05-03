@@ -6,44 +6,68 @@
 #define BACHELOR_CONCURRENTPARTIALLYEXTERNALTREE_H
 
 #include <functional>
-
-template <typename Key, typename Compare = std::less<Key>>
+#include <memory>
+template <typename Key, typename Compare = std::less<Key>,
+          typename Alloc = std::allocator<Key>>
 class ConcurrentPartiallyExternalTree{
     struct Node{
+        using Node_allocator = typename std::allocator_traits<Alloc>::template rebind_alloc<Node>;
+        using Alloc_traits = typename std::allocator_traits<Node_allocator>;
         Key value;
-        Node* l;
-        Node* r;
-        Node* p;
+        std::atomic<std::shared_ptr<Node>> l;
+        std::atomic<std::shared_ptr<Node>> r;
+        std::atomic<std::shared_ptr<Node>> p;
         int height;
         bool deleted;
-        Node(Node* parent, const Key& value): p(parent), l(nullptr), r(nullptr),
+        Node(std::shared_ptr<Node> parent, const Key& value): p(parent), l(nullptr), r(nullptr),
                                         value(value), height(0), deleted(false){}
+        template<typename ...Args>
+        static std::shared_ptr<Node> createNode(Node_allocator& alloc, Args&&... args){
+            Node* node = Alloc_traits::allocate(alloc, 1);
+            Alloc_traits::construct(alloc, node, std::forward<Args>(args)...);
+            return std::shared_ptr<Node>(node);
+        }
+//        static void deleteNode(Node_allocator& alloc, std::shared_ptr<Node> node){
+//            Alloc_traits::destroy(alloc, node);
+//            Alloc_traits::deallocate(alloc, node, 1);
+//        }
     };
-    Node* header = nullptr;
+    typename Node::Node_allocator alloc;
+    std::atomic<std::shared_ptr<Node>> header;
+    Compare comp;
+public:
+    ConcurrentPartiallyExternalTree(Alloc alloc = Alloc()): alloc(alloc){}
+
+private:
+    bool equiv(const Key& a, const Key& b) const{
+        return !comp(a, b) && !comp(b, a);
+    }
     //Функция поиска узла, его родителя и родителя родителя по ключу.
-    std::tuple<Node*, Node*, Node*> search(Node* root, const Key& key) const {
-        Node* gparent = nullptr;
-        Node* parent = nullptr;
-        Node* curr = root;
+    std::tuple<std::shared_ptr<Node>, std::shared_ptr<Node>, std::shared_ptr<Node>>
+    search(std::shared_ptr<Node> root, const Key& key) const {
+        std::shared_ptr<Node> gparent = nullptr;
+        std::shared_ptr<Node> parent = nullptr;
+        std::shared_ptr<Node> curr = root;
         std::cout << "[ ";
         while(curr != nullptr){
             std::cout << curr->value << ' ';
-            if(curr->value == key){
+            if(equiv(curr->value,key)){
                 break;
             }
 
             // спускаемся по дереву
             gparent = parent;
             parent = curr;
-            if(key < curr->value){
-                curr = curr->l;
+            if(comp(key,curr->value)){
+                curr = curr->l.load();
             }else{
-                curr = curr->r;
+                curr = curr->r.load();
             }
         }
         std::cout << "] ";
-        return {gparent, parent, curr};
+        return {std::move(gparent), std::move(parent), std::move(curr)};
     }
+
 public:
     bool contains(const Key& key) const{
         std::cout << "\ncontains " << key << ' ';
@@ -52,17 +76,17 @@ public:
         return curr!=nullptr && !curr->deleted; //узел найден и он не помечен как удаленный, тогда true
     }
     bool insert(const Key& key) {
-        std::cout << "\ninsert " << key << ' ';
-        if(header == nullptr){
-            header = new Node(nullptr, key);
+        if(header.load() == nullptr){
+            header.store(Node::createNode(alloc, nullptr, key));
             return true;
         }
+        std::cout << "\ninsert " << key << ' ';
         auto [gparent, parent, curr] = search(header, key);
         if(curr == nullptr){ //узла с нужным ключем нет в дереве
-            if(key < parent->value){ // возвращаемся к родителю и ищем чем был curr(левым или правым ребенком)
-                parent->l = new Node(parent, key);
+            if(comp(key,parent->value)){ // возвращаемся к родителю и ищем чем был curr(левым или правым ребенком)
+                parent->l.store(Node::createNode(alloc, parent, key));
             }else{
-                parent->r = new Node(parent, key);
+                parent->r.store(Node::createNode(alloc, parent, key));
             }
             return true; // узла не было, а в результате операции появился
         }else{
@@ -80,62 +104,62 @@ public:
         if(curr == nullptr || curr->deleted){
             return false; // узла нет в дереве, операция ни на что не повлияла
         }
-        int n_children = (curr->l != nullptr) + (curr->r != nullptr);
+        int n_children = (curr->l.load() != nullptr) + (curr->r.load() != nullptr);
         if(n_children == 2){
             // у вершины оба ребенка есть, надо только пометить его удаленным
             curr->deleted = true;
         }else if(n_children == 1){
             // надо удалить curr и отдать его ребенка parent
-            Node* child;
-            if(curr->l != nullptr){
-                child = curr->l;
+            std::shared_ptr<Node> child;
+            if(curr->l.load() != nullptr){
+                child = curr->l.load();
             }else{
-                child = curr->r;
+                child = curr->r.load();
             }
-            delete curr;
+//            Node::deleteNode(alloc,curr);
 
             child->p = parent;
             if(parent == nullptr){ //TODO можно заменить
-                header = child;
+                header.store(child);
             }else {
-                if (key < parent->value) {
-                    parent->l = child;
+                if (comp(key, parent->value)) {
+                    parent->l.store(child);
                 } else {
-                    parent->r = child;
+                    parent->r.store(child);
                 }
             }
         }else{
             // узел это лист, возможно надо удалить серого родителя
             if(parent == nullptr){
-                delete curr;
+//                Node::deleteNode(alloc, curr);
                 header = nullptr;
                 return true;
             }
             if(parent->deleted) {
-                Node* child;
-                if(key < parent->value){
-                    child = parent->r; //надо отдать gparent
+                std::shared_ptr<Node> child;
+                if(comp(key,parent->value)){
+                    child = parent->r.load(); //надо отдать gparent
                 }else{
-                    child = parent->l;
+                    child = parent->l.load();
                 }
-                delete curr;
-                delete parent;
-                child->p = gparent;
+//                Node::deleteNode(alloc, curr);
+//                Node::deleteNode(alloc, parent);
+                child->p.store(gparent);
                 if(gparent == nullptr){ // TODO можно заменить
-                    header = child;
+                    header.store(child);
                 }else {
-                    if (key < gparent->value) {
-                        gparent->l = child;
+                    if (comp(key,gparent->value)) {
+                        gparent->l.store(child);
                     } else {
-                        gparent->r = child;
+                        gparent->r.store(child);
                     }
                 }
             }else{
-                delete curr;
-                if (key < parent->value) {
-                    parent->l = nullptr;
+//                Node::deleteNode(alloc, curr);
+                if (comp(key,parent->value)) {
+                    parent->l.store(nullptr);
                 } else {
-                    parent->r = nullptr;
+                    parent->r.store(nullptr);
                 }
             }
         }
