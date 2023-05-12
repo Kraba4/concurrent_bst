@@ -100,19 +100,19 @@ int main() {
     std::thread tq1([&](){
         randCommands(mutex_set,seed1,mtx,c1);
     });
-    std::thread tq2([&](){
-        randCommands(mutex_set,seed2,mtx,c2);
-    });
-    std::thread tq3([&](){
-        randCommands(mutex_set,seed3,mtx,c3);
-    });
-    std::thread tq4([&](){
-        randCommands(mutex_set,seed4,mtx,c4);
-    });
+//    std::thread tq2([&](){
+//        randCommands(mutex_set,seed2,mtx,c2);
+//    });
+//    std::thread tq3([&](){
+//        randCommands(mutex_set,seed3,mtx,c3);
+//    });
+//    std::thread tq4([&](){
+//        randCommands(mutex_set,seed4,mtx,c4);
+//    });
     tq1.join();
-    tq2.join();
-    tq3.join();
-    tq4.join();
+//    tq2.join();
+//    tq3.join();
+//    tq4.join();
     auto end = std::chrono::high_resolution_clock::now();
     constexpr double BILLION = 1'000'000'000;
     std::cout << (end - start).count()/BILLION << '\n';
@@ -126,19 +126,19 @@ int main() {
     std::thread t1([&](){
         randCommands(tree, seed1,b1);
     });
-    std::thread t2([&](){
-        randCommands(tree, seed2,b2);
-    });
-    std::thread t3([&](){
-        randCommands(tree, seed3,b3);
-    });
-    std::thread t4([&](){
-        randCommands(tree, seed4,b4);
-    });
+//    std::thread t2([&](){
+//        randCommands(tree, seed2,b2);
+//    });
+//    std::thread t3([&](){
+//        randCommands(tree, seed3,b3);
+//    });
+//    std::thread t4([&](){
+//        randCommands(tree, seed4,b4);
+//    });
     t1.join();
-    t2.join();
-    t3.join();
-    t4.join();
+//    t2.join();
+//    t3.join();
+//    t4.join();
     end = std::chrono::high_resolution_clock::now();
     std::cout << (end - start).count()/BILLION << '\n';
     cds::Terminate() ;
@@ -148,19 +148,19 @@ int main() {
     std::thread tqw1([&](){
         randCommands(e,seed1,mtx,a1);
     });
-    std::thread tqw2([&](){
-        randCommands(e,seed2,mtx,a2);
-    });
-    std::thread tqw3([&](){
-        randCommands(e,seed3,mtx,a3);
-    });
-    std::thread tqw4([&](){
-        randCommands(e,seed4,mtx,a4);
-    });
+//    std::thread tqw2([&](){
+//        randCommands(e,seed2,mtx,a2);
+//    });
+//    std::thread tqw3([&](){
+//        randCommands(e,seed3,mtx,a3);
+//    });
+//    std::thread tqw4([&](){
+//        randCommands(e,seed4,mtx,a4);
+//    });
     tqw1.join();
-    tqw2.join();
-    tqw3.join();
-    tqw4.join();
+//    tqw2.join();
+//    tqw3.join();
+//    tqw4.join();
     end = std::chrono::high_resolution_clock::now();
     std::cout << (end - start).count()/BILLION << '\n';
 

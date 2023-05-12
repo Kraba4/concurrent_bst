@@ -11,12 +11,6 @@
 #define BACHELOR_CONCURRENTPARTIALLYEXTERNALTREE_H
 
 template<typename T>
-using SharedPtr = LFStructs::SharedPtr<T>;
-
-template<typename T>
-using AtomicSharedPtr = LFStructs::AtomicSharedPtr<T>;
-
-template<typename T>
 using guarded_ptr = cds::gc::HP::guarded_ptr<T>;
 
 using guard = cds::gc::HP::Guard;
@@ -30,8 +24,6 @@ class ConcurrentPartiallyExternalTree{
         int height;
         std::atomic<Node*> l;
         std::atomic<Node*> r;
-//        std::atomic<LFStructs::SharedPtr<Node>> l;
-//        std::atomic<LFStructs::SharedPtr<Node>> r;
         std::mutex mtx;
 
         /* информация для partially external, если true, то вершина считается вспомогательной для навигации
@@ -56,7 +48,6 @@ class ConcurrentPartiallyExternalTree{
         }
         template<typename ...Args>
         static Node* createNode(Node_allocator& alloc, Args&&... args){
-//            return LFStructs::SharedPtr<Node> std::allocate_shared<Node>(alloc,std::forward<Args>(args)...).get());
             Node* p = Alloc_traits::allocate(alloc, 1);
             Alloc_traits::construct(alloc, p, std::forward<Args>(args)...);
             return p;
@@ -87,6 +78,7 @@ private:
     bool equiv(const Key& a, const Key& b) const{
         return !comp(a, b) && !comp(b, a);
     }
+
     //Функция поиска узла, его родителя и родителя родителя по ключу.
     std::tuple<guard, guard, guard, Node*, Node*, Node*>
     search(const std::atomic<Node*>& root, const Key& key) {
@@ -110,16 +102,8 @@ private:
             parent_grd.copy(curr_grd);
             if(comp(key,parent->value)){
                 curr = curr_grd.protect(parent->l);
-//                if(parent->l.load() != nullptr){
-//                    retries += parent->l.load()->value;
-//                }
-//                std::cout << parent->l.load() << std::endl;
             }else{
                 curr = curr_grd.protect(parent->r);
-//                if(parent->r.load() != nullptr){
-//                    retries += parent->r.load()->value;
-//                }
-
             }
         }
 //        std::cout << "] ";
@@ -130,7 +114,7 @@ public:
     bool contains(const Key& key){
         // lock-free операция, никаких блокировок нет
 //        std::cout << "\ncontains " << key << ' ';
-        if(header.load() == nullptr){
+        if(header.load(std::memory_order_relaxed) == nullptr){
             return false;
         }
         auto [gp_grd, p_grd, c_grd, gparent, parent, curr] = search(header, key);
@@ -143,16 +127,16 @@ public:
             return false;
         }
         if (comp(key,parent->value)) { // смотрим куда надо поставить Node(key)
-            if(parent->l.load() != nullptr) { //пока брали блокировку, кто-то занял нужное место
+            if(parent->l.load(std::memory_order_relaxed) != nullptr) { //пока брали блокировку, кто-то занял нужное место
                 return false;
             }
             //так как взята блокировка, никто не может изменить parent->l с момента проверки условия != nullptr
-            parent->l.store(Node::createNode(alloc, key));
+            parent->l.store(Node::createNode(alloc, key), std::memory_order_relaxed);
         } else {
-            if(parent->r.load() != nullptr) {
+            if(parent->r.load(std::memory_order_relaxed) != nullptr) {
                 return false;
             }
-            parent->r.store(Node::createNode(alloc, key));
+            parent->r.store(Node::createNode(alloc, key), std::memory_order_relaxed);
         }
         return true;
     }
@@ -167,12 +151,12 @@ public:
     void insert(const Key& key) {
         while(true) { //повторяем операцию до тех пор, пока не сможем ее корректно выполнить
 //            std::cout << "\ninsert " << key << ' ';
-            if (header.load() == nullptr) {
+            if (header.load(std::memory_order_relaxed) == nullptr) {
                 std::lock_guard lock(null_header_mtx);
-                if(header.load() != nullptr){ //пока брали блокировку, кто-то занял header
+                if(header.load(std::memory_order_relaxed) != nullptr){ //пока брали блокировку, кто-то занял header
                     continue;
                 }
-                header.store(Node::createNode(alloc, key));
+                header.store(Node::createNode(alloc, key), std::memory_order_relaxed);
                 break;
             }
             auto [gp_grd, p_grd, c_grd, gparent, parent, curr] = search(header, key);
@@ -185,8 +169,6 @@ public:
             }
             if(result){ //никакой поток не помешал операции, можно выходить из цикла
                 break;
-            }else{
-                retries++;
             }
         }
     }
@@ -197,7 +179,7 @@ public:
         }
 
         //пока брали блокировку, у вершины стало не 2 ребенка, нельзя делать логику удаления как для 2
-        if((curr->l.load() != nullptr) + (curr->r.load() != nullptr) != 2){
+        if((curr->l.load(std::memory_order_relaxed) != nullptr) + (curr->r.load(std::memory_order_relaxed) != nullptr) != 2){
             return false;
         }
         curr->routing = true;
@@ -211,7 +193,7 @@ public:
         if(!parent && parent->deleted){
             return false;//родитель удален, если привяжем ребенка к нему, он потеряется. Нужно начать операцию заново
         }
-        if((curr->l.load() != nullptr) + (curr->r.load() != nullptr) != 1){
+        if((curr->l.load(std::memory_order_relaxed) != nullptr) + (curr->r.load(std::memory_order_relaxed) != nullptr) != 1){
             return false; //пока брали блокировку, вершина изменила вид
         }
         // надо удалить curr и отдать его ребенка parent
@@ -219,21 +201,21 @@ public:
         Node* child;
         if(curr->l.load() != nullptr){
             childGuard.protect(curr->l);
-            child = curr->l.load();
+            child = curr->l.load(std::memory_order_relaxed);
         }else{
             childGuard.protect(curr->r);
-            child = curr->r.load();
+            child = curr->r.load(std::memory_order_relaxed);
         }
         curr->deleted = true;
         if(!parent){ //TODO можно заменить
-            header.store(child); //потенциальная ошибка todo
+            header.store(child, std::memory_order_release); //потенциальная ошибка todo
             cds::gc::HP::retire<NodeDisposer>(curr);
         }else {
             if (comp(key, parent->value)) {
-                parent->l.store(child);
+                parent->l.store(child, std::memory_order_release);
                 cds::gc::HP::retire<NodeDisposer>(curr);
             } else {
-                parent->r.store(child);
+                parent->r.store(child, std::memory_order_release);
                 cds::gc::HP::retire<NodeDisposer>(curr);
             }
         }
@@ -262,37 +244,38 @@ public:
         if(parent&&parent->deleted){
             return false;
         }
-        if((curr->l.load() != nullptr) + (curr->r.load() != nullptr) != 0){
+        if((curr->l.load(std::memory_order_relaxed) != nullptr) + (curr->r.load(std::memory_order_relaxed) != nullptr) != 0){
             return false;//пока брали блокировку, вершина изменила вид
         }
         // узел это лист, возможно надо удалить серого родителя
         if(!parent){
             curr->deleted = true;
-            header.store(nullptr);
+            header.store(nullptr, std::memory_order_release);
             cds::gc::HP::retire<NodeDisposer>(curr);
             return true;
         }
         if(parent->routing) {
             cds::gc::HP::Guard childGuard;
             Node* child;
-            if(comp(key,parent->value)){
-                childGuard.protect(parent->r);
-                child = parent->r.load(); //надо отдать gparent
-                parent->l.store(nullptr);
-            }else{
-                childGuard.protect(parent->l);
-                child = parent->l.load();
-                parent->r.store(nullptr);
-            }
             curr->deleted = true;
             parent->deleted = true;
+            if(comp(key,parent->value)){
+                childGuard.protect(parent->r);
+                child = parent->r.load(std::memory_order_relaxed); //надо отдать gparent
+                parent->l.store(nullptr, std::memory_order_release);
+            }else{
+                childGuard.protect(parent->l);
+                child = parent->l.load(std::memory_order_relaxed);
+                parent->r.store(nullptr, std::memory_order_release);
+            }
+
             if(!gparent){ // TODO можно заменить
-                header.store(child);
+                header.store(child, std::memory_order_release);
             }else {
                 if (comp(key,gparent->value)) {
-                    gparent->l.store(child);
+                    gparent->l.store(child, std::memory_order_release);
                 } else {
-                    gparent->r.store(child);
+                    gparent->r.store(child, std::memory_order_release);
                 }
             }
             cds::gc::HP::retire<NodeDisposer>(curr);
@@ -301,9 +284,9 @@ public:
             curr->deleted = true;
 //            cds::gc::HP::retire<Node>(curr);
             if (comp(key,parent->value)) {
-                parent->l.store(nullptr);
+                parent->l.store(nullptr, std::memory_order_release);
             } else {
-                parent->r.store(nullptr);
+                parent->r.store(nullptr, std::memory_order_release);
             }
             cds::gc::HP::retire<NodeDisposer>(curr);
         }
@@ -329,12 +312,13 @@ public:
         //                                                   если кто-то удалит, значит выполнил за нас
         while (true) {
             auto [gp_grd, p_grd, c_grd, gparent, parent, curr] = search(header, key);
+//            std::cout << "\nremove " << key << ' ';
             if (!curr || curr->routing) {
                 return false; // узла нет в дереве, операция ни на что не повлияла
             }
 
-            int n_children = (curr->l.load() != nullptr)
-                             + (curr->r.load() != nullptr);
+            int n_children = (curr->l.load(std::memory_order_relaxed) != nullptr)
+                             + (curr->r.load(std::memory_order_relaxed) != nullptr);
             bool result;
             if (n_children == 2) {
                 result = remove_with_two_child(curr);
@@ -355,6 +339,7 @@ public:
         }
         print(next->l.load());
         print(next->r.load());
+//        std::cout << next->value << ' ';
         retries++;
     }
     void print(){
