@@ -19,6 +19,7 @@ using AtomicSharedPtr = LFStructs::AtomicSharedPtr<T>;
 template<typename T>
 using guarded_ptr = cds::gc::HP::guarded_ptr<T>;
 
+using guard = cds::gc::HP::Guard;
 template <typename Key, typename Compare = std::less<Key>,
           typename Alloc = std::allocator<Key>>
 class ConcurrentPartiallyExternalTree{
@@ -45,10 +46,13 @@ class ConcurrentPartiallyExternalTree{
         Node(const Key& value): l(), r(),
                                         value(value), height(0), routing(false), deleted(false){
         }
+        Node(){
+
+        }
         ~Node(){
 //            std::cout << "destroy " << value << std::endl;
-            l = SharedPtr<Node>();
-            r = SharedPtr<Node>();
+//            cds::gc::HP::retire<NodeDisposer>(l.load());
+//            cds::gc::HP::retire<NodeDisposer>(r.load());
         }
         template<typename ...Args>
         static Node* createNode(Node_allocator& alloc, Args&&... args){
@@ -61,6 +65,11 @@ class ConcurrentPartiallyExternalTree{
 //            Alloc_traits::destroy(alloc, node);
 //            Alloc_traits::deallocate(alloc, node, 1);
 //        }
+    };
+    struct NodeDisposer{
+        void operator()(Node* p){
+            delete p;
+        }
     };
     typename Node::Node_allocator alloc;
     Compare comp;
@@ -79,14 +88,16 @@ private:
         return !comp(a, b) && !comp(b, a);
     }
     //Функция поиска узла, его родителя и родителя родителя по ключу.
-    std::tuple<guarded_ptr<Node>, guarded_ptr<Node>, guarded_ptr<Node>>
+    std::tuple<guard, guard, guard, Node*, Node*, Node*>
     search(const std::atomic<Node*>& root, const Key& key) {
-        guarded_ptr<Node> gparent;
-        guarded_ptr<Node> parent;
-        guarded_ptr<Node> curr(root);
-
+        guard gparent_grd;
+        guard parent_grd;
+        guard curr_grd;
+        Node* gparent;
+        Node* parent;
+        Node* curr = curr_grd.protect(root);
 //        std::cout << "[ ";
-        while(!curr.empty()){
+        while(curr){
 //            std::cout << curr->value << ' ';
             if(equiv(curr->value,key)){
                 break;
@@ -95,14 +106,24 @@ private:
             // спускаемся по дереву
             gparent = std::move(parent);
             parent = std::move(curr);
+            gparent_grd.copy(parent_grd);
+            parent_grd.copy(curr_grd);
             if(comp(key,parent->value)){
-                curr = guarded_ptr<Node>(parent->l);
+                curr = curr_grd.protect(parent->l);
+//                if(parent->l.load() != nullptr){
+//                    retries += parent->l.load()->value;
+//                }
+//                std::cout << parent->l.load() << std::endl;
             }else{
-                curr = guarded_ptr<Node>(parent->r);
+                curr = curr_grd.protect(parent->r);
+//                if(parent->r.load() != nullptr){
+//                    retries += parent->r.load()->value;
+//                }
+
             }
         }
 //        std::cout << "] ";
-        return {std::move(gparent), std::move(parent), std::move(curr)};
+        return {std::move(gparent_grd), std::move(parent_grd), std::move(curr_grd), std::move(gparent), std::move(parent), std::move(curr)};
     }
 
 public:
@@ -112,11 +133,11 @@ public:
         if(header.load() == nullptr){
             return false;
         }
-        auto [gparent, parent, curr] = search(header, key);
+        auto [gp_grd, p_grd, c_grd, gparent, parent, curr] = search(header, key);
 //        std::cout <<  bool(curr!=nullptr && !curr->routing);
         return curr && !curr->routing; //узел найден и он не помечен как удаленный, тогда true
     }
-    bool insert_new_node(const guarded_ptr<Node>& parent, const Key& key){
+    bool insert_new_node(Node* parent, const Key& key){
         std::lock_guard<std::mutex> lock(parent->mtx);
         if(parent->deleted) {//пока брали блокировку, кто-то удалил узел
             return false;
@@ -135,7 +156,7 @@ public:
         }
         return true;
     }
-    bool insert_existing_node(const guarded_ptr<Node>& curr, const Key& key){
+    bool insert_existing_node(Node* curr, const Key& key){
         std::lock_guard<std::mutex> lock(curr->mtx);
         if(curr->deleted){//пока брали блокировку, кто-то удалил узел
             return false;
@@ -154,7 +175,7 @@ public:
                 header.store(Node::createNode(alloc, key));
                 break;
             }
-            auto [gparent, parent, curr] = search(header, key);
+            auto [gp_grd, p_grd, c_grd, gparent, parent, curr] = search(header, key);
 
             bool result;
             if (!curr) {//узла с нужным ключем нет в дереве
@@ -169,7 +190,7 @@ public:
             }
         }
     }
-    bool remove_with_two_child(const guarded_ptr<Node>& curr){
+    bool remove_with_two_child(Node* curr){
         std::lock_guard lock(curr->mtx);
         if(curr->deleted){
             return true;//вершина удалена, кто-то удалил за нас
@@ -182,16 +203,12 @@ public:
         curr->routing = true;
         return true;
     }
-    bool remove_with_one_child(const guarded_ptr<Node>& curr, const guarded_ptr<Node>& parent,
+    bool critical_section_remove_with_one_child(Node* curr, Node* parent,
                                const Key& key){
-        std::mutex dummy_parent_mtx;
-        auto lock = std::scoped_lock(dummy_parent_mtx, curr->mtx);
-//        auto lock = (parent) ? std::scoped_lock(parent->mtx, curr->mtx):
-//                                                std::scoped_lock(dummy_parent_mtx, curr->mtx);
         if(curr->deleted){
             return true;//вершина удалена, кто-то удалил за нас
         }
-        if(parent && parent->deleted){
+        if(!parent && parent->deleted){
             return false;//родитель удален, если привяжем ребенка к нему, он потеряется. Нужно начать операцию заново
         }
         if((curr->l.load() != nullptr) + (curr->r.load() != nullptr) != 1){
@@ -208,31 +225,34 @@ public:
             child = curr->r.load();
         }
         curr->deleted = true;
-//        cds::gc::HP::retire<Node>(curr.load());
         if(!parent){ //TODO можно заменить
             header.store(child); //потенциальная ошибка todo
+            cds::gc::HP::retire<NodeDisposer>(curr);
         }else {
             if (comp(key, parent->value)) {
                 parent->l.store(child);
+                cds::gc::HP::retire<NodeDisposer>(curr);
             } else {
                 parent->r.store(child);
+                cds::gc::HP::retire<NodeDisposer>(curr);
             }
         }
         return true;
     }
-    bool remove_with_zero_child(const guarded_ptr<Node>& curr, const guarded_ptr<Node>& parent,
-                              const guarded_ptr<Node>& gparent, const Key& key){
-        //на случай если gparent == nullptr parent==nullptr,
-        //ведь надо взять блокировку только у существующих узлов
-        //dummy_mtx для того, чтобы взять блокировку на несуществующий mutex(пустого mutex не существует)
-        std::mutex dummy_gparent_mtx;
-        std::mutex dummy_parent_mtx;
-        auto lock = std::scoped_lock(dummy_gparent_mtx, dummy_parent_mtx, curr->mtx);
-//        auto lock =
-//        (gparent && parent)? std::scoped_lock(gparent->mtx,parent->mtx,curr->mtx):
-//        (parent)?            std::scoped_lock(dummy_gparent_mtx, parent->mtx, curr->mtx):
-//                             std::scoped_lock(dummy_gparent_mtx, dummy_parent_mtx, curr->mtx);
+    bool remove_with_one_child(Node* curr, Node* parent,
+                               const Key& key){
+        //пояснение зачем такой if в аналогичной функции remove_with_zero_child
+        if(parent){
+            std::scoped_lock lock(parent->mtx, curr->mtx);
+            return critical_section_remove_with_one_child(curr, parent, key);
+        }else{
+            std::lock_guard lock(curr->mtx);
+            return critical_section_remove_with_one_child(curr, parent, key);
+        }
 
+    }
+    bool critical_section_remove_with_zero_child(Node* curr, Node* parent,
+                                Node* gparent, const Key& key){
         if(curr->deleted){
             return true;//вершина удалена, кто-то удалил за нас
         }
@@ -249,6 +269,7 @@ public:
         if(!parent){
             curr->deleted = true;
             header.store(nullptr);
+            cds::gc::HP::retire<NodeDisposer>(curr);
             return true;
         }
         if(parent->routing) {
@@ -257,14 +278,14 @@ public:
             if(comp(key,parent->value)){
                 childGuard.protect(parent->r);
                 child = parent->r.load(); //надо отдать gparent
+                parent->l.store(nullptr);
             }else{
                 childGuard.protect(parent->l);
                 child = parent->l.load();
+                parent->r.store(nullptr);
             }
             curr->deleted = true;
             parent->deleted = true;
-//            cds::gc::HP::retire<Node>(curr);
-//            cds::gc::HP::retire<Node>(parent);
             if(!gparent){ // TODO можно заменить
                 header.store(child);
             }else {
@@ -274,6 +295,8 @@ public:
                     gparent->r.store(child);
                 }
             }
+            cds::gc::HP::retire<NodeDisposer>(curr);
+            cds::gc::HP::retire<NodeDisposer>(parent);
         }else{
             curr->deleted = true;
 //            cds::gc::HP::retire<Node>(curr);
@@ -282,15 +305,30 @@ public:
             } else {
                 parent->r.store(nullptr);
             }
+            cds::gc::HP::retire<NodeDisposer>(curr);
         }
         return true;
+    }
+    bool remove_with_zero_child(Node* curr, Node* parent,
+                              Node* gparent, const Key& key){
+        //Надо брать разное количество мьютексов в зависимости о ситуации
+        //if из-за того что надо взять их с помощью RAII и нет пустого scoped_lock
+        if(gparent && parent) {
+            std::scoped_lock lock(gparent->mtx,parent->mtx,curr->mtx);
+            return critical_section_remove_with_zero_child(curr, parent, gparent, key);
+        }else if(parent){
+            std::scoped_lock lock(parent->mtx,curr->mtx);
+            return critical_section_remove_with_zero_child(curr, parent, gparent, key);
+        }else{
+            std::lock_guard lock(curr->mtx);
+            return critical_section_remove_with_zero_child(curr, parent, gparent, key);
+        }
     }
     bool remove(const Key& key) {
 //        auto [gparent, parent, curr] = search(header, key);//находим один раз
         //                                                   если кто-то удалит, значит выполнил за нас
         while (true) {
-            auto [gparent, parent, curr] = search(header, key);
-//            std::cout << "\nremove " << key << ' ';
+            auto [gp_grd, p_grd, c_grd, gparent, parent, curr] = search(header, key);
             if (!curr || curr->routing) {
                 return false; // узла нет в дереве, операция ни на что не повлияла
             }
@@ -307,8 +345,6 @@ public:
             }
             if(result){
                 break;
-            }else{
-                retries++;
             }
         }
         return true; // узел был, а в результате операции удален
@@ -319,7 +355,6 @@ public:
         }
         print(next->l.load());
         print(next->r.load());
-//        std::cout << next->value << ' ';
         retries++;
     }
     void print(){
