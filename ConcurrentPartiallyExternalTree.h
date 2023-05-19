@@ -4,7 +4,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include "atomic_shared_ptr.h"
+#include <cds/sync/spinlock.h>
 #include <cds/gc/hp.h>
 
 #ifndef BACHELOR_CONCURRENTPARTIALLYEXTERNALTREE_H
@@ -14,8 +14,7 @@ template<typename T>
 using guarded_ptr = cds::gc::HP::guarded_ptr<T>;
 
 using guard = cds::gc::HP::Guard;
-template <typename Key, typename Compare = std::less<Key>,
-          typename Alloc = std::allocator<Key>>
+template <typename Key, typename Compare = std::less<Key>, typename Alloc = std::allocator<Key>>
 class ConcurrentPartiallyExternalTree{
     struct Node{
         using Node_allocator = typename std::allocator_traits<Alloc>::template rebind_alloc<Node>;
@@ -24,7 +23,7 @@ class ConcurrentPartiallyExternalTree{
         int height;
         std::atomic<Node*> l;
         std::atomic<Node*> r;
-        std::mutex mtx;
+        cds::sync::spin_lock<cds::backoff::LockDefault> mtx;
 
         /* информация для partially external, если true, то вершина считается вспомогательной для навигации
          * логически в контейнере ее нет*/
@@ -38,9 +37,7 @@ class ConcurrentPartiallyExternalTree{
         Node(const Key& value): l(), r(),
                                         value(value), height(0), routing(false), deleted(false){
         }
-        Node(){
-
-        }
+        Node(){}
         ~Node(){
 //            std::cout << "destroy " << value << std::endl;
 //            cds::gc::HP::retire<NodeDisposer>(l.load());
@@ -68,10 +65,8 @@ class ConcurrentPartiallyExternalTree{
     std::mutex null_header_mtx;
 public:
     int retries=0;
-    ConcurrentPartiallyExternalTree(Alloc alloc = Alloc()): alloc(alloc){
-    }
+    ConcurrentPartiallyExternalTree(Alloc alloc = Alloc()): alloc(alloc){}
     ~ConcurrentPartiallyExternalTree(){
-//        std::cout << "tree" << std::endl;
         header.store(nullptr);
     }
 private:
@@ -85,12 +80,11 @@ private:
         guard gparent_grd;
         guard parent_grd;
         guard curr_grd;
-        Node* gparent;
-        Node* parent;
+        Node* gparent = nullptr;
+        Node* parent = nullptr;
         Node* curr = curr_grd.protect(root);
-//        std::cout << "[ ";
+
         while(curr){
-//            std::cout << curr->value << ' ';
             if(equiv(curr->value,key)){
                 break;
             }
@@ -106,23 +100,20 @@ private:
                 curr = curr_grd.protect(parent->r);
             }
         }
-//        std::cout << "] ";
         return {std::move(gparent_grd), std::move(parent_grd), std::move(curr_grd), std::move(gparent), std::move(parent), std::move(curr)};
     }
 
 public:
     bool contains(const Key& key){
         // lock-free операция, никаких блокировок нет
-//        std::cout << "\ncontains " << key << ' ';
         if(header.load(std::memory_order_relaxed) == nullptr){
             return false;
         }
         auto [gp_grd, p_grd, c_grd, gparent, parent, curr] = search(header, key);
-//        std::cout <<  bool(curr!=nullptr && !curr->routing);
         return curr && !curr->routing; //узел найден и он не помечен как удаленный, тогда true
     }
     bool insert_new_node(Node* parent, const Key& key){
-        std::lock_guard<std::mutex> lock(parent->mtx);
+        std::lock_guard lock(parent->mtx);
         if(parent->deleted) {//пока брали блокировку, кто-то удалил узел
             return false;
         }
@@ -141,7 +132,7 @@ public:
         return true;
     }
     bool insert_existing_node(Node* curr, const Key& key){
-        std::lock_guard<std::mutex> lock(curr->mtx);
+        std::lock_guard lock(curr->mtx);
         if(curr->deleted){//пока брали блокировку, кто-то удалил узел
             return false;
         }
@@ -150,7 +141,6 @@ public:
     }
     void insert(const Key& key) {
         while(true) { //повторяем операцию до тех пор, пока не сможем ее корректно выполнить
-//            std::cout << "\ninsert " << key << ' ';
             if (header.load(std::memory_order_relaxed) == nullptr) {
                 std::lock_guard lock(null_header_mtx);
                 if(header.load(std::memory_order_relaxed) != nullptr){ //пока брали блокировку, кто-то занял header
@@ -190,7 +180,7 @@ public:
         if(curr->deleted){
             return true;//вершина удалена, кто-то удалил за нас
         }
-        if(!parent && parent->deleted){
+        if(parent && parent->deleted){
             return false;//родитель удален, если привяжем ребенка к нему, он потеряется. Нужно начать операцию заново
         }
         if((curr->l.load(std::memory_order_relaxed) != nullptr) + (curr->r.load(std::memory_order_relaxed) != nullptr) != 1){
@@ -307,12 +297,9 @@ public:
             return critical_section_remove_with_zero_child(curr, parent, gparent, key);
         }
     }
-    bool remove(const Key& key) {
-//        auto [gparent, parent, curr] = search(header, key);//находим один раз
-        //                                                   если кто-то удалит, значит выполнил за нас
+    bool erase(const Key& key) {
         while (true) {
             auto [gp_grd, p_grd, c_grd, gparent, parent, curr] = search(header, key);
-//            std::cout << "\nremove " << key << ' ';
             if (!curr || curr->routing) {
                 return false; // узла нет в дереве, операция ни на что не повлияла
             }
@@ -339,7 +326,6 @@ public:
         }
         print(next->l.load());
         print(next->r.load());
-//        std::cout << next->value << ' ';
         retries++;
     }
     void print(){
