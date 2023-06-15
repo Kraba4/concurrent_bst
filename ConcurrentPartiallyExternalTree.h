@@ -71,36 +71,35 @@ public:
     }
 private:
     bool equiv(const Key& a, const Key& b) const{
+//        return a==b;
         return !comp(a, b) && !comp(b, a);
     }
 
     //Функция поиска узла, его родителя и родителя родителя по ключу.
-    std::tuple<guard, guard, guard, Node*, Node*, Node*>
-    search(const std::atomic<Node*>& root, const Key& key) {
-        guard gparent_grd;
-        guard parent_grd;
-        guard curr_grd;
+    std::tuple<Node*, Node*, Node*>
+    search( cds::gc::HP::GuardArray<3>& ga, const std::atomic<Node*>& root, const Key& key) {
+//        guard gparent_grd;
+//        guard parent_grd;
+//        guard curr_grd;
         Node* gparent = nullptr;
         Node* parent = nullptr;
-        Node* curr = curr_grd.protect(root);
-
+        Node* curr = ga.protect(0, root);
+        int c=0;
         while(curr){
             if(equiv(curr->value,key)){
                 break;
             }
-
             // спускаемся по дереву
             gparent = std::move(parent);
             parent = std::move(curr);
-            gparent_grd.copy(parent_grd);
-            parent_grd.copy(curr_grd);
+            ++c;
             if(comp(key,parent->value)){
-                curr = curr_grd.protect(parent->l);
+                curr = ga.protect(c%3, parent->l);
             }else{
-                curr = curr_grd.protect(parent->r);
+                curr = ga.protect(c%3, parent->r);
             }
         }
-        return {std::move(gparent_grd), std::move(parent_grd), std::move(curr_grd), std::move(gparent), std::move(parent), std::move(curr)};
+        return {std::move(gparent), std::move(parent), std::move(curr)};
     }
 
 public:
@@ -109,7 +108,8 @@ public:
         if(header.load(std::memory_order_relaxed) == nullptr){
             return false;
         }
-        auto [gp_grd, p_grd, c_grd, gparent, parent, curr] = search(header, key);
+        cds::gc::HP::GuardArray<3> ga;
+        auto [gparent, parent, curr] = search(ga, header, key);
         return curr && !curr->routing; //узел найден и он не помечен как удаленный, тогда true
     }
     bool insert_new_node(Node* parent, const Key& key){
@@ -149,7 +149,8 @@ public:
                 header.store(Node::createNode(alloc, key), std::memory_order_relaxed);
                 break;
             }
-            auto [gp_grd, p_grd, c_grd, gparent, parent, curr] = search(header, key);
+            cds::gc::HP::GuardArray<3> ga;
+            auto [gparent, parent, curr] = search(ga, header, key);
 
             bool result;
             if (!curr) {//узла с нужным ключем нет в дереве
@@ -190,11 +191,9 @@ public:
         cds::gc::HP::Guard childGuard;
         Node* child;
         if(curr->l.load() != nullptr){
-            childGuard.protect(curr->l);
-            child = curr->l.load(std::memory_order_relaxed);
+            child = childGuard.protect(curr->l);
         }else{
-            childGuard.protect(curr->r);
-            child = curr->r.load(std::memory_order_relaxed);
+            child = childGuard.protect(curr->r);
         }
         curr->deleted = true;
         if(!parent){ //TODO можно заменить
@@ -250,12 +249,10 @@ public:
             curr->deleted = true;
             parent->deleted = true;
             if(comp(key,parent->value)){
-                childGuard.protect(parent->r);
-                child = parent->r.load(std::memory_order_relaxed); //надо отдать gparent
+                child = childGuard.protect(parent->r); //надо отдать gparent
                 parent->l.store(nullptr, std::memory_order_release);
             }else{
-                childGuard.protect(parent->l);
-                child = parent->l.load(std::memory_order_relaxed);
+                child = childGuard.protect(parent->l);
                 parent->r.store(nullptr, std::memory_order_release);
             }
 
@@ -298,8 +295,10 @@ public:
         }
     }
     bool erase(const Key& key) {
+        cds::gc::HP::GuardArray<3> ga;
         while (true) {
-            auto [gp_grd, p_grd, c_grd, gparent, parent, curr] = search(header, key);
+
+            auto [gparent, parent, curr] = search(ga, header, key);
             if (!curr || curr->routing) {
                 return false; // узла нет в дереве, операция ни на что не повлияла
             }
