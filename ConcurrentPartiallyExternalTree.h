@@ -23,8 +23,11 @@ class ConcurrentPartiallyExternalTree{
         int height;
         std::atomic<Node*> l;
         std::atomic<Node*> r;
+//        std::atomic<Node*> n;
+//        std::atomic<Node*> prev;
+//        std::atomic<Node*> p;
         cds::sync::spin_lock<cds::backoff::LockDefault> mtx;
-
+//        cds::sync::spin_lock<cds::backoff::LockDefault> lo_mtx;
         /* информация для partially external, если true, то вершина считается вспомогательной для навигации
          * логически в контейнере ее нет*/
         bool routing;
@@ -64,7 +67,6 @@ class ConcurrentPartiallyExternalTree{
     std::atomic<Node*> header;
     std::mutex null_header_mtx;
 public:
-    int retries=0;
     ConcurrentPartiallyExternalTree(Alloc alloc = Alloc()): alloc(alloc){}
     ~ConcurrentPartiallyExternalTree(){
         header.store(nullptr);
@@ -325,7 +327,7 @@ public:
         }
         print(next->l.load());
         print(next->r.load());
-        retries++;
+//        retries++;
     }
     void print(){
         std::cout << std::endl;
