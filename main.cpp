@@ -18,92 +18,72 @@
 #include <concurrent_priority_queue.h>
 #include <shared_mutex>
 #include <chrono>
-#include "ConcurrentAVL_LO.h"
+#include "ConcurrentAVL_LO_old.h"
+#include "Concurrent_AVL_LO.h"
 using namespace std::chrono_literals;
 typedef cds::urcu::gc< cds::urcu::general_buffered<> >  rcu_gpb;
 
-template<typename Container, int RANGE, long long MILLISECONDS>
-int randCommands(Container& container, int seed, int p_insert, int p_erase){
+
+template<typename Container>
+int randCommands(Container& container, int seed, int range,
+                 long long milliseconds,int p_insert, int p_erase){
     cds::threading::Manager::attachThread();
     std::minstd_rand rnd(seed);
-    int c = 0;
+//    int c = 0;
     int fake = 0;
-    auto start = std::chrono::high_resolution_clock::now();
-    for(int i=0;i<1000000000;++i){
+//    auto start = std::chrono::high_resolution_clock::now();
+    for(int i=0;i<milliseconds;++i){
         int r = rnd()%100;
         if(r <p_insert){
 //            container.insert(i*seed);
-            container.insert(rnd()%RANGE);
+            container.insert(rnd()%range);
         }else if(r < p_insert+p_erase){
-            container.erase(rnd()%RANGE);
+            container.erase(rnd()%range);
         }else{
-            if(container.contains(rnd()%RANGE)){
+            if(container.contains(rnd()%range)){
                 fake++;
             };
         }
-        c++;
-        auto end=std::chrono::high_resolution_clock::now();
-        if((end - start).count() > 1'000'000 * MILLISECONDS) break;
+//        c++;
+//        auto end=std::chrono::high_resolution_clock::now();
+//        if((end - start).count() > 1'000'000 * milliseconds) break;
     }
     cds::threading::Manager::detachThread();
-    return c + fake%2;
+    return fake%2;
 }
-template<int RANGE, long long MILLISECONDS>
-int randCommands(cds::container::BronsonAVLTreeMap<rcu_gpb, int, int>& container, int seed, int p_insert, int p_erase){
-    cds::threading::Manager::attachThread();
-    std::minstd_rand rnd(seed);
-    int c = 0;
-    int fake = 0;
-    auto start = std::chrono::high_resolution_clock::now();
-    for(int i=0;i<1000000000;++i){
-        int r = rnd()%100;
-        if(r <p_insert){
-//            container.insert(i*seed);
-            container.insert(rnd()%RANGE);
-        }else if(r < p_insert+p_erase){
-            container.erase(rnd()%RANGE);
-        }else{
-            if(container.contains(rnd()%RANGE)){
-                fake++;
-            };
-        }
-        c++;
-        auto end=std::chrono::high_resolution_clock::now();
-        if((end - start).count() > 1'000'000 * MILLISECONDS) break;
-    }
-    cds::threading::Manager::detachThread();
-    return c + fake%2;
-}
-template<int RANGE, long long MILLISECONDS>
-int randCommands(std::set<int>& set, int seed, std::shared_mutex& mtx, int p_insert, int p_erase){
+
+int randCommands(std::set<int>& set, int seed, std::shared_mutex& mtx,int range,
+                 long long milliseconds, int p_insert, int p_erase){
     std::minstd_rand rnd(seed);
 //    std::lock_guard lock(mtx);
-    int c = 0;
+//    int c = 0;
     int fake = 0;
-    auto start = std::chrono::high_resolution_clock::now();
-    for(int i=0;i<1000000000;++i){
+//    auto start = std::chrono::high_resolution_clock::now();
+    for(int i=0;i<milliseconds;++i){
         int r = rnd()%100;
         if(r <p_insert){
             std::lock_guard lock(mtx);
-            set.insert(rnd()%RANGE);
+            set.insert(rnd()%range);
         }else if(r < p_insert + p_erase){
             std::lock_guard lock(mtx);
-            set.erase(rnd()%RANGE);
+            set.erase(rnd()%range);
         }else{
             std::shared_lock lock(mtx);
-            if(set.find(rnd()%RANGE)!=set.end()){
+            if(set.find(rnd()%range)!=set.end()){
                 fake++;
             }
         }
-        c++;
-        auto end=std::chrono::high_resolution_clock::now();
-        if((end - start).count() > 1'000'000 * MILLISECONDS) break;
+//        c++;
+//        auto end=std::chrono::high_resolution_clock::now();
+//        if((end - start).count() > 1'000'000 * milliseconds) break;
     }
-    return c + fake%2;
+    return fake%2;
 }
 template<typename Func>
 void start_threads(int n_threads,  Func f){
+
     std::vector<std::thread> threads(n_threads);
+
     for(int i=0;i<n_threads;++i){
         threads[i] = std::thread(f);
     }
@@ -113,20 +93,24 @@ void start_threads(int n_threads,  Func f){
 }
 
 template<typename Func>
-int start_threads(int n_threads,std::minstd_rand& rnd,  Func f){
-    int seed = rnd()%1000000;
+long long start_threads(int n_threads,std::minstd_rand& rnd,  Func f){
+    int seed = rnd();
     std::minstd_rand local_rnd(seed);
     std::vector<std::thread> threads(n_threads);
     std::vector<int> results(n_threads);
+    auto start = std::chrono::high_resolution_clock::now();
     for(int i=0;i<n_threads;++i){
         threads[i] = std::thread(f, local_rnd(), std::ref(results[i]));
     }
-    int sum = 0;
+//    int sum = 0;
     for(int i=0;i<n_threads;++i){
         threads[i].join();
-        sum+=results[i];
+//        sum+=results[i];
     }
-    return sum;
+    auto end=std::chrono::high_resolution_clock::now();
+    return (end - start).count();
+
+//    return sum;
 }
 template<typename Container>
 int stress(Container& container, int seed, int range, int count, int p_insert, int p_erase){
@@ -152,266 +136,110 @@ int stress(Container& container, int seed, int range, int count, int p_insert, i
 template<typename Container>
 void init(Container& container){
     cds::threading::Manager::attachThread();
-    randCommands<Container, 1000000, 5000>(container, 1, 100, 0);
+    randCommands(container, 1,1000000000,2000LL, 100, 0);
     cds::threading::Manager::detachThread();
 }
-void test_time(){
+template<typename Func>
+void checkCo(Func co_set_test, int seed, long long sh_res, int i,
+             ConcurrentPartiallyExternalTree<int>*& co_set, bool needInit) {
+    std::minstd_rand rnd(seed);
+    cds::Initialize();
+    cds::gc::HP gc;
+    ConcurrentPartiallyExternalTree<int> l_set;
+    co_set = &l_set;
+    if(needInit) {
+        init(l_set);
+        std::cout << "(i) ";
+    }
+    long long res = start_threads(i, rnd, co_set_test);
+    std::cout << "partially "<< (double)sh_res/res << ' ' << res << std::endl;
+    cds::Terminate();
+}
+template<typename Func>
+void checkMtx(Func sm_set_test, int i, int &seed, long long &sh_res, std::set<int>*& m_set) {
+    std::minstd_rand rnd(seed);
+    std::set<int> mutex_set;
+    m_set = &mutex_set;
+    sh_res = start_threads(i, rnd, sm_set_test);
+    std::cout << "shared_mutex  " << 1 << ' ' << sh_res << std::endl;
+}
+
+template<typename Func>
+void checkLo(Func lo_set_test, ConcurrentAVL_LO<int>*& lo_set, int seed,
+             long long sh_res, int i, bool needInit) {
+    std::minstd_rand rnd(seed);
+    cds::Initialize();
+    cds::gc::HP gc;
+    ConcurrentAVL_LO<int> l_set;
+    lo_set = &l_set;
+    cds::threading::Manager::attachThread();
+    l_set.insert(-10);
+    cds::threading::Manager::detachThread();
+    if(needInit) {
+        init(l_set);
+        std::cout<<"(i) ";
+    }
+    long long res = start_threads(i, rnd, lo_set_test);
+    std::cout << "logic_order " << (double)sh_res/res << ' ' << res << std::endl;
+    cds::Terminate();
+}
+
+void test_time(int s_threads, int e_threads, int range, long long milliseconds, int p_insert, int p_erase){
 
     std::set<int>* m_set;
     std::shared_mutex mtx;
     auto sm_set_test = [&](int seed, int& res){
-        res = randCommands<1000, 2000LL>(*m_set, seed, mtx, 50, 50);
+        res = randCommands(*m_set, seed, mtx, range,milliseconds,  p_insert, p_erase);
     };
     ConcurrentAVL_LO<int>* lo_set;
     auto lo_set_test = [&](int seed, int& res){
-        res = randCommands<ConcurrentAVL_LO<int>, 1000, 2000LL>(*lo_set, seed, 50, 50);
+        res = randCommands(*lo_set, seed,range,milliseconds, p_insert, p_erase);
     };
+//    ConcurrentAVL_LO_old<int>* loo_set;
+//    auto loo_set_test = [&](int seed, int& res){
+//        res = randCommands<ConcurrentAVL_LO_old<int>, 1000, 2000LL>(*loo_set, seed, 50, 50);
+//    };
     ConcurrentPartiallyExternalTree<int>* co_set;
     auto co_set_test = [&](int seed, int& res){
-        res = randCommands<ConcurrentPartiallyExternalTree<int>, 1000, 2000LL>(*co_set, seed, 50, 50);
+        res = randCommands(*co_set, seed,range,milliseconds, p_insert, p_erase);
+    };
+    cds::container::BronsonAVLTreeMap<rcu_gpb, int, int>* el;
+
+    auto el_set_test = [&](int seed, int& res){
+        res = randCommands(*el, seed,range,milliseconds, p_insert, p_erase);
     };
 
-    std::minstd_rand rnd(time(NULL));
-    int sh_res;
-    std::cout << "\nthreads: " << 1 << std::endl;
-    {
-        std::set<int> mutex_set;
-        m_set = &mutex_set;
-        sh_res = start_threads(1, rnd, sm_set_test);
-        std::cout << "shared_mutex " << 1 << ' ' <<  sh_res << std::endl;
-    }
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentAVL_LO<int> l_set;
-        lo_set = &l_set;
-        cds::threading::Manager::attachThread();
-        l_set.insert(-10);
-        cds::threading::Manager::detachThread();
-        int res = start_threads(1, rnd, lo_set_test);
-        std::cout << "logic_order (1) " << (double)res/sh_res << ' ' << res << std::endl;
-//        std::cout << l_set.retries << std::endl;
-        cds::Terminate();
-    }
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentAVL_LO<int> l_set;
-        lo_set = &l_set;
-        cds::threading::Manager::attachThread();
-        l_set.insert(-10);
-        cds::threading::Manager::detachThread();
-        int res = start_threads(1, rnd, lo_set_test);
-        std::cout << "logic_order  " << (double)res/sh_res << ' ' << res << std::endl;
-//        std::cout << l_set.retries << std::endl;
-        cds::Terminate();
-    }
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentPartiallyExternalTree<int> l_set;
-        co_set = &l_set;
-        int res = start_threads(1, rnd, co_set_test);
-        std::cout << "partially    " << (double)res/sh_res << ' ' << res << std::endl;
-        cds::Terminate();
-    }
-//    {
-//        cds::Initialize();
-//        rcu_gpb gpbRCU;
-//        cds::container::BronsonAVLTreeMap<rcu_gpb, int, int> el;
-//        auto el_set_test = [&](int seed){
-//            int res = randCommands< cds::container::BronsonAVLTreeMap<rcu_gpb, int, int>, 1000000, 5000>(el, seed);
-//            return res;
-//        };
-//        int res = start_threads(1, rnd, el_set_test);
-//        std::cout << "bronson      "<< (double)res/sh_res << ' ' << res << std::endl;
-//        cds::Terminate();
-//    }
-    std::cout << "\nthreads: " << 2 << std::endl;
-    {
-        std::set<int> mutex_set;
-        m_set = &mutex_set;
-        sh_res = start_threads(2, rnd, sm_set_test);
-        std::cout << "shared_mutex " << sh_res << std::endl;
-    }
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentAVL_LO<int> l_set;
-        lo_set = &l_set;
-        cds::threading::Manager::attachThread();
-        l_set.insert(-10);
-        cds::threading::Manager::detachThread();
-        init(l_set);
-        int res = start_threads(2, rnd, lo_set_test);
-        std::cout << "logic_order (1) " << (double)res/sh_res << ' ' << res << std::endl;
-//        std::cout << l_set.retries << std::endl;
-        cds::Terminate();
-    }
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentAVL_LO<int> l_set;
-        lo_set = &l_set;
-        cds::threading::Manager::attachThread();
-        l_set.insert(-10);
-        cds::threading::Manager::detachThread();
-        int res = start_threads(2, rnd, lo_set_test);
-        std::cout << "logic_order  " << (double)res/sh_res << ' ' << res << std::endl;
-//        std::cout << l_set.retries << std::endl;
-        cds::Terminate();
+    std::minstd_rand rndm(time(NULL));
+
+    int seed = rndm();
+
+    long long sh_res;
+    for(int i=s_threads;i<=e_threads; ++i){
+        std::cout << "\nthreads: " << i << std::endl;
+        checkMtx(sm_set_test, i, seed, sh_res, m_set);
+        checkLo(lo_set_test,lo_set, seed, sh_res, i, true);
+        checkLo(lo_set_test,lo_set, seed, sh_res, i, false);
+        checkCo(co_set_test, seed, sh_res, i, co_set, true);
+        checkCo(co_set_test, seed, sh_res, i, co_set, false);
     }
 
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentPartiallyExternalTree<int> l_set;
-        co_set = &l_set;
-        init(l_set);
-        int res = start_threads(2, rnd, co_set_test);
-        std::cout << "partially (i)    "  << (double)res/sh_res << ' ' << res << std::endl;
-        cds::Terminate();
-    }
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentPartiallyExternalTree<int> l_set;
-        co_set = &l_set;
-//        init(l_set);
-        int res = start_threads(2, rnd, co_set_test);
-        std::cout << "partially    "  << (double)res/sh_res << ' ' << res << std::endl;
-        cds::Terminate();
-    }
-
-    std::cout << "\nthreads: " << 3 << std::endl;
-    {
-        std::set<int> mutex_set;
-        m_set = &mutex_set;
-        sh_res = start_threads(3, rnd, sm_set_test);
-        std::cout << "shared_mutex  " << 1 << ' ' << sh_res << std::endl;
-    }
-
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentAVL_LO<int> l_set;
-        lo_set = &l_set;
-        cds::threading::Manager::attachThread();
-        l_set.insert(-10);
-        cds::threading::Manager::detachThread();
-        init(l_set);
-        int res = start_threads(3, rnd, lo_set_test);
-        std::cout << "logic_order (i)  " << (double)res/sh_res << ' ' << res << std::endl;
-//        std::cout << l_set.retries << std::endl;
-        cds::Terminate();
-    }
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentAVL_LO<int> l_set;
-        lo_set = &l_set;
-        cds::threading::Manager::attachThread();
-        l_set.insert(-10);
-        cds::threading::Manager::detachThread();
-        int res = start_threads(3, rnd, lo_set_test);
-        std::cout << "logic_order   " << (double)res/sh_res << ' ' << res << std::endl;
-//        std::cout << l_set.retries << std::endl;
-        cds::Terminate();
-    }
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentPartiallyExternalTree<int> l_set;
-        co_set = &l_set;
-        init(l_set);
-        int res = start_threads(3, rnd, co_set_test);
-        std::cout << "partially (i)    " << (double)res/sh_res << ' ' << res << std::endl;
-        cds::Terminate();
-    }
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentPartiallyExternalTree<int> l_set;
-        co_set = &l_set;
-//        init(l_set);
-        int res = start_threads(3, rnd, co_set_test);
-        std::cout << "partially     " << (double)res/sh_res << ' ' << res << std::endl;
-        cds::Terminate();
-    }
-    std::cout << "\nthreads: " << 4 << std::endl;
-    {
-        std::set<int> mutex_set;
-        m_set = &mutex_set;
-        sh_res = start_threads(4, rnd, sm_set_test);
-        std::cout << "shared_mutex  " << 1 << ' ' << sh_res << std::endl;
-    }
-
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentAVL_LO<int> l_set;
-        lo_set = &l_set;
-        cds::threading::Manager::attachThread();
-        l_set.insert(-10);
-        cds::threading::Manager::detachThread();
-        init(l_set);
-        int res = start_threads(4, rnd, lo_set_test);
-        std::cout << "logic_order (1) " << (double)res/sh_res << ' ' << res << std::endl;
-//        std::cout << l_set.retries << std::endl;
-        cds::Terminate();
-    }
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentAVL_LO<int> l_set;
-        lo_set = &l_set;
-        cds::threading::Manager::attachThread();
-        l_set.insert(-10);
-        cds::threading::Manager::detachThread();
-        int res = start_threads(4, rnd, lo_set_test);
-        std::cout << "logic_order  " << (double)res/sh_res << ' ' << res << std::endl;
-//        std::cout << l_set.retries << std::endl;
-        cds::Terminate();
-    }
-
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentPartiallyExternalTree<int> l_set;
-        co_set = &l_set;
-        init(l_set);
-        int res = start_threads(4, rnd, co_set_test);
-        std::cout << "partially (i) "<< (double)res/sh_res << ' ' << res << std::endl;
-        cds::Terminate();
-    }
-    {
-        cds::Initialize();
-        cds::gc::HP gc;
-        ConcurrentPartiallyExternalTree<int> l_set;
-        co_set = &l_set;
-//        init(l_set);
-        int res = start_threads(4, rnd, co_set_test);
-        std::cout << "partially    "<< (double)res/sh_res << ' ' << res << std::endl;
-        cds::Terminate();
-    }
-
-    cds::container::BronsonAVLTreeMap<rcu_gpb, int, int> el;
     cds::Initialize();
     rcu_gpb gpbRCU;
     {
-        auto el_set_test = [&](int seed, int& res){
-            res = randCommands<1000, 2000LL>(el, seed, 50, 50);
-        };
-        int res = start_threads(4, rnd, el_set_test);
-        std::cout << "bronson      "<< (double)res/sh_res << ' ' << res << std::endl;
+        cds::container::BronsonAVLTreeMap<rcu_gpb, int, int> l_el;
+        std::minstd_rand rnd(seed);
+        el = &l_el;
+        long long res = start_threads(4, rnd, el_set_test);
+        std::cout << "bronson      "<< (double)sh_res/res << ' ' << res << std::endl;
     }
     cds::Terminate();
 }
+
 void test_stress(){
 
     ConcurrentAVL_LO<int>* lo_set;
     auto lo_set_test = [&](int seed, int& res){
-        res = stress(*lo_set, seed, 1000, 100000, 50, 30);
+        res = stress(*lo_set, seed, 20, 1000000, 50, 50);
     };
     std::minstd_rand rnd(time(NULL));
     int last_i = 0;
@@ -425,9 +253,9 @@ void test_stress(){
         l_set.insert(-10);
         cds::threading::Manager::detachThread();
         int res = start_threads(4, rnd, lo_set_test);
-        if(i/1000 != last_i) {
+        if(i/10 != last_i) {
             std::cout << i << " done " << res <<  std::endl;
-            last_i = i/1000;
+            last_i = i/10;
         }
         l_set.traverse_all();
         l_set.traverse_all_reverse();
@@ -495,10 +323,10 @@ void test_iterator(){
         l_set.insert(-10);
         cds::threading::Manager::detachThread();
         auto t1 = std::thread([&](){
-            start_threads(64, rnd, lo_set_test);
+            start_threads(4, rnd, lo_set_test);
             std::cout << "end1_";
         });
-        start_threads(8, [&](){start_iterator(l_set, 100, 0, 370000000);});
+        start_threads(1, [&](){start_iterator(l_set, 100, 0, 70000000);});
         std::cout << "end2_";
         t1.join();
         std::cout <<i << ' ' << std::endl;
@@ -506,7 +334,8 @@ void test_iterator(){
     }
 }
 int main() {
-//    test_time();
+//    test_time(4, 4, 100000000, 5000000, 100, 0);
+//    test_time(4, 1000, 10000000, 50, 50);
     test_stress();
 //    test_iterator();
 }

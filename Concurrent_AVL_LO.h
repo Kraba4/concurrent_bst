@@ -1,21 +1,26 @@
 //
+// Created by HONOR on 17.06.2023.
+//
+
+#ifndef BACHELOR_CONCURRENT_AVL_LO_H
+#define BACHELOR_CONCURRENT_AVL_LO_H
+
+//
 // Created by HONOR on 01.06.2023.
 //
 
-#ifndef BACHELOR_CONCURRENTAVL_LO_H
-#define BACHELOR_CONCURRENTAVL_LO_H
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <cds/sync/spinlock.h>
 #include <cds/gc/hp.h>
-#define mor std::memory_order_seq_cst
+#define mor std::memory_order_relaxed
 template <typename Key, typename Compare = std::less<Key>, typename Alloc = std::allocator<Key>>
 class ConcurrentAVL_LO{
     struct Node{
         using Node_allocator = typename std::allocator_traits<Alloc>::template rebind_alloc<Node>;
         using Alloc_traits = typename std::allocator_traits<Node_allocator>;
-        Key value;
+        Key key;
         int height;
         std::atomic<Node*> l;
         std::atomic<Node*> r;
@@ -35,15 +40,11 @@ class ConcurrentAVL_LO{
             r.store(nullptr, mor);
             p.store(nullptr, mor);
         }
-        Node(const Key& value, Node* parent): l(), r(), p(parent),
-                                value(value), height(0){
+        Node(const Key& key, Node* parent): l(), r(), p(parent),
+                                            key(key), height(0){
         }
         Node(){}
-        ~Node(){
-//            std::cout << "destroy " << value << std::endl;
-//            cds::gc::HP::retire<NodeDisposer>(l.load());
-//            cds::gc::HP::retire<NodeDisposer>(r.load());
-        }
+
         template<typename ...Args>
         static Node* createNode(Node_allocator& alloc, Args&&... args){
             Node* p = Alloc_traits::allocate(alloc, 1);
@@ -64,17 +65,45 @@ class ConcurrentAVL_LO{
     static bool comp(const Key& a, const Key& b){
         return a < b;
     }
+
+//    struct concurrent_singly_linked_list{
+//        struct list_node{
+//            Node** cached_node;
+//            list_node* next;
+//            ~list_node(){
+//                delete *cached_node;
+//            }
+//        };
+//        std::mutex mtx;
+//        list_node* head;
+//        void put(Node** p_node){
+//            std::lock_guard lock(mtx);
+//            list_node* new_list_node = new list_node({p_node, head});
+//            head = new_list_node;
+//        }
+//        ~concurrent_singly_linked_list(){
+//            list_node* curr = head;
+//            list_node* next = curr->next;
+//            while(next != nullptr){
+//                delete curr;
+//                curr = next;
+//                next = curr->next;
+//            }
+//            delete curr;
+//        }
+//    };
+//    concurrent_singly_linked_list cached_nodes;
+
     std::atomic<Node*> header;
     std::mutex null_header_mtx;
     std::atomic<Node*> begin_node;
     std::atomic<Node*> end_node;
     Node* begin_ptr;
     Node* end_ptr;
-
 public:
     ConcurrentAVL_LO(){
         Node* begin = Node::createNode(alloc, -100000, nullptr);
-        Node* end =Node::createNode(alloc, 1000000000, nullptr);
+        Node* end =Node::createNode(alloc, 2000000000, nullptr);
         begin_ptr = begin;
         end_ptr = end;
         begin->prev.store(end);
@@ -84,7 +113,14 @@ public:
         begin_node.store(begin);
         end_node.store(end);
     }
-
+    ~ConcurrentAVL_LO(){
+        Node* curr = begin_ptr;
+        while(curr!=end_ptr){
+            curr = curr->next.load(mor);
+            delete curr->prev.load(mor);
+        }
+        delete curr;
+    }
     class iterator {
     private:
         int i = 0;
@@ -97,14 +133,14 @@ public:
         friend class ConcurrentAVL_LO;
         // Надо объявить вложенные типы итератора
 //        typedef std::bidirectional_iterator_tag iterator_category;
-//        typedef T value_type;
+//        typedef T key_type;
 //        typedef int difference_type;
 //        typedef T& reference;
 //        typedef T* pointer;
 //        iterator(basenode* nd) : node(nd) {}
 
         iterator(std::atomic<Node*>* header, std::atomic<Node*>* node)
-        : header(header), node(guarder.protect(0, *node)), step(1){}
+                : header(header), node(guarder.protect(0, *node)), step(1){}
 
         iterator(std::atomic<Node*>* header){
 
@@ -117,19 +153,19 @@ public:
         }
         iterator operator++() {
             i=0;
-            Key value = node->value;
+            Key key = node->key;
             Node* new_node = guarder.protect(step%2, node->next);
             step++;
             int c = 10;
             if(new_node == nullptr) {
                 i = 1;
                 cds::gc::HP::GuardArray<2> ga;
-                while (new_node == nullptr || new_node->value <= value) {
-                    new_node = simple_search(ga, *header, value);
+                while (new_node == nullptr || new_node->key <= key) {
+                    new_node = simple_search(ga, *header, key);
                     if (new_node != nullptr) {
                         i += c*1;
                         c*=10;
-                        if (new_node->value <= value) {
+                        if (new_node->key <= key) {
                             i += c*3;
                             c*=10;
                             new_node = guarder.protect(step%2, new_node->next);
@@ -146,7 +182,7 @@ public:
                     }
                 }
             }
-            c = new_node->value;
+            c = new_node->key;
             node = new_node;
             return *this;
         }
@@ -157,19 +193,19 @@ public:
 //        }
         iterator operator--() {
             i=0;
-            Key value = node->value;
+            Key key = node->key;
             Node* new_node = guarder.protect(step%2, node->prev);
             step++;
             int c = 10;
             if(new_node == nullptr) {
                 i = 1;
                 cds::gc::HP::GuardArray<2> ga;
-                while (new_node == nullptr || new_node->value >= value) {
-                    new_node = simple_search(ga, *header, value);
+                while (new_node == nullptr || new_node->key >= key) {
+                    new_node = simple_search(ga, *header, key);
                     if (new_node != nullptr) {
                         i += c*1;
                         c*=10;
-                        if (new_node->value >= value) {
+                        if (new_node->key >= key) {
                             i += c*3;
                             c*=10;
                             new_node = guarder.protect(step%2, new_node->prev);
@@ -186,7 +222,7 @@ public:
                     }
                 }
             }
-            c = new_node->value;
+            c = new_node->key;
             node = new_node;
             return *this;
         }
@@ -203,10 +239,10 @@ public:
             return node != other.node;
         }
         void print(){
-            std::cout << node->value << std::endl;
+            std::cout << node->key << std::endl;
         }
         Key get(){
-            return node->value;
+            return node->key;
         }
 //        guarded_ptr<Node*> operator*() {
 //            return nullptr;
@@ -226,18 +262,18 @@ private:
     }
     static Node*
     simple_search(cds::gc::HP::GuardArray<2>& guard_array,
-           const std::atomic<Node*>& root,
-           const Key& key) {
+                  const std::atomic<Node*>& root,
+                  const Key& key) {
         Node *parent = nullptr;
         int step = 0;
         Node *curr = guard_array.protect(step, root);
         while (curr) {
-            if (equiv(curr->value, key)) {
+            if (equiv(curr->key, key)) {
                 break;
             }
             step++;
             parent = curr;
-            if (comp(key, curr->value)) {
+            if (comp(key, curr->key)) {
                 curr = guard_array.protect(step % 2, curr->l);
             } else {
                 curr = guard_array.protect(step % 2, curr->r);
@@ -257,12 +293,12 @@ private:
         Node* curr = guard_array.protect(step, root);
 
         while(curr){
-            if(equiv(curr->value,key)){
+            if(equiv(curr->key,key)){
                 break;
             }
             step++;
             parent = curr;
-            if(comp(key,curr->value)){
+            if(comp(key,curr->key)){
                 curr = guard_array.protect(step%2,curr->l);
             }else{
                 curr = guard_array.protect(step%2,curr->r);
@@ -271,9 +307,9 @@ private:
 
         if(curr == nullptr) {
             step++;
-            if (key < parent->value) {
+            if (key < parent->key) {
                 Node* new_parent = begin_ptr;
-                while (key < parent->value) {
+                while (key < parent->key) {
                     step++;
                     new_parent = guard_array.protect(step%2, parent->prev);
                     if(new_parent == begin_ptr) break;
@@ -290,7 +326,7 @@ private:
                 }
             } else {
                 Node* new_parent = end_ptr;
-                while (key > parent->value) {
+                while (key > parent->key) {
                     step++;
                     new_parent = guard_array.protect(step%2, parent->next);
                     if(new_parent == end_ptr) break;
@@ -306,7 +342,7 @@ private:
                     }
                 }
             }
-            if(parent->value == key){
+            if(parent->key == key){
                 curr = parent;
                 parent = guard_array.protect(step%2, curr->p);
             }
@@ -315,56 +351,58 @@ private:
         return {parent, curr};
     }
     bool insert_left_child(cds::gc::HP::GuardArray<3>& guard_array,
-                         Node* parent, const Key& key){
+                           Node* parent, const Key& key){
+//        Node*& new_node = cached_node;
+
         {
+            std::lock_guard lock1(parent->mtx);
+            if (parent->isUnlinked()) return false;
+            if (parent->l.load(mor) !=nullptr) return false;
+
             while(true) {
-                    std::lock_guard lock1(parent->mtx);
-                    if (parent->isUnlinked()) return false;
+                Node* prev = guard_array.protect(2, parent->prev);
+                if (prev->key > key) return false;
+                if (prev->key == key) return true;
+                std::lock_guard lock2(prev->lo_mtx);
+                if (prev->next.load(mor) != parent) continue;
+//                    if(prev->isUnlinked()) continue;
 
-                    Node *prev = guard_array.protect(2, parent->prev);
-                    if (prev->value > key) return false;
-                    if (prev->value == key) return true;
-                    std::lock_guard lock2(prev->lo_mtx);
-                    if(prev->isUnlinked()) continue;
-
-                    std::lock_guard lock3(parent->lo_mtx);
-                    if(parent->l.load(mor) !=nullptr) return false;
-                    if(parent->prev.load(mor) != prev || prev->next.load(mor) != parent) continue;
-
-                    Node* new_node = Node::createNode(alloc, key, parent);
-                    new_node->prev.store(prev, mor); new_node->next.store(parent, mor);
-                    prev->next.store(new_node, mor); parent->prev.store(new_node, mor);
-                    parent->l.store(new_node, mor);
-                    break;
-                }
+                std::lock_guard lock3(parent->lo_mtx);
+                Node *new_node = Node::createNode(alloc, key, parent);
+                new_node->prev.store(prev, mor); new_node->next.store(parent, mor);
+                prev->next.store(new_node, mor);
+                parent->prev.store(new_node, mor); parent->l.store(new_node, mor);
+                break;
+            }
         }
 //        fix(parent);
+//        cached_node = nullptr;
         return true;
     }
     bool insert_right_child(cds::gc::HP::GuardArray<3>& guard_array,
                             Node* parent, const Key& key) {
         std::lock_guard lock1(parent->mtx);
-        if(parent->isUnlinked()){
-            return false;
-        }
-        if(parent->r.load(mor) != nullptr){
-            return false;
-        }
-        Node *next = guard_array.protect(2, parent->next);
-        if(next->value < key) return false;
-        if(next->value == key) return true;
+        if(parent->isUnlinked()) return false;
+        if(parent->r.load(mor) != nullptr) return false;
+
         std::lock_guard lock2(parent->lo_mtx);
+        Node *next = guard_array.protect(2, parent->next);
+        if(next->key < key) return false;
+        if(next->key == key) return true;
+
         std::lock_guard lock3(next->lo_mtx);
-        if(parent->next.load(mor) != next) return false;
+//        if(parent->next.load(mor) != next) return false;
         Node* new_node = Node::createNode(alloc, key, parent);
         new_node->prev.store(parent, mor); new_node->next.store(next, mor);
         parent->next.store(new_node, mor); next->prev.store(new_node, mor);
         parent->r.store(new_node, mor);
+
         return true;
     }
+
     bool insert_new_node(cds::gc::HP::GuardArray<3>& guard_array,
                          Node* parent, const Key& key) {
-        if (comp(key, parent->value)) {
+        if (comp(key, parent->key)) {
             return insert_left_child(guard_array, parent, key);
         }else {
             return insert_right_child(guard_array, parent, key);
@@ -382,6 +420,13 @@ public:
     }
 
     void insert(const Key& key){
+//        static thread_local bool init_cached_node = false;
+//        static thread_local Node* cached_node = nullptr;
+//        if(init_cached_node == false){
+//            cached_node = Node::createNode(alloc);
+//            cached_nodes.put(&cached_node);
+//            init_cached_node = true;
+//        }
         cds::gc::HP::GuardArray<3> ga;
         while(true) {
             if (header.load(mor) == nullptr) {
@@ -389,7 +434,10 @@ public:
                 if(header.load(mor) != nullptr){ //пока брали блокировку, кто-то занял header
                     continue;
                 }
-                Node* new_node = Node::createNode(alloc, key, nullptr);
+//                if(cached_node == nullptr){
+//                    cached_node = Node::createNode(alloc, key, nullptr);
+//                }
+                Node* new_node =  Node::createNode(alloc, key, nullptr);
                 Node* begin = begin_node.load(mor);
                 Node* end = end_node.load(mor);
                 new_node->prev.store(begin, mor);
@@ -397,6 +445,8 @@ public:
                 begin->next.store(new_node, mor);
                 end->prev.store(new_node, mor);
                 header.store(new_node, mor);
+
+//                cached_node = nullptr;
                 break;
             }
 
@@ -404,6 +454,7 @@ public:
             if(curr!=nullptr){
                 break;
             }
+
             bool result = insert_new_node(ga, parent, key);
             if(result){
                 break;
@@ -437,8 +488,8 @@ public:
             if (next->isUnlinked()) return false;
             if (next->prev.load(mor) != curr) return false;
             if (curr->next.load(mor) != next) return false;//not need?
-            assert(parent->value < curr->value);
-            assert(curr->value < next->value);
+            assert(parent->key < curr->key);
+            assert(curr->key < next->key);
             curr->unlink();
 //            curr->desc = 0;
             assert(next != curr);
@@ -473,8 +524,8 @@ public:
             if (curr->prev.load(mor) != prev) return false;//not
             std::lock_guard lo_lock3(parent->lo_mtx);
             if (parent->prev.load(mor) != curr) return false; //not need
-            assert(prev->value < curr->value);
-            assert(curr->value < parent->value);
+            assert(prev->key < curr->key);
+            assert(curr->key < parent->key);
             curr->unlink();
 //            curr->desc = 1;
 //            curr->last_prev = prev;
@@ -511,8 +562,8 @@ public:
                 if (curr->prev.load(mor) != prev) return false;
                 if (next->prev.load(mor) != curr) return false;
                 if (curr->next.load(mor) != next) return false; //not
-                assert(prev->value < curr->value);
-                assert(curr->value < next->value);
+                assert(prev->key < curr->key);
+                assert(curr->key < next->key);
                 curr->unlink();
 //                curr->desc = 2;
 //                curr->last_prev = prev;
@@ -533,8 +584,8 @@ public:
                 if (curr->next.load(mor) != next) return false;
                 if (next->prev.load(mor) != curr) return false;//not
 
-                assert(parent->value < curr->value);
-                assert(curr->value < next->value);
+                assert(parent->key < curr->key);
+                assert(curr->key < next->key);
                 curr->unlink();
 //                curr->desc = 3;
 //                curr->last_prev = parent;
@@ -572,8 +623,8 @@ public:
                 if (curr->prev.load(mor) != prev) return false;
                 if (prev->next.load(mor) != curr) return false; //not
 
-                assert(prev->value < curr->value);
-                assert(curr->value < parent->value);
+                assert(prev->key < curr->key);
+                assert(curr->key < parent->key);
                 curr->unlink();
 //                curr->desc = 4;
 //                curr->last_prev = prev;
@@ -598,8 +649,8 @@ public:
                 if (next->prev.load(mor) != curr) return false;
                 if (curr->next.load(mor) != next) return false; //not
 
-                assert(prev->value < curr->value);
-                assert(curr->value < next->value);
+                assert(prev->key < curr->key);
+                assert(curr->key < next->key);
                 curr->unlink();
 //                curr->desc = 5;
                 next->prev.store(prev, mor);
@@ -698,84 +749,84 @@ public:
     }
 
     bool erase_left_two(cds::gc::HP::GuardArray<5>& guard_array,
-                         Node* parent, Node* curr) {
+                        Node* parent, Node* curr) {
 //        return true;
         {
-        std::lock_guard lock1(parent->mtx);
-        if (parent->isUnlinked()) return false;
-        if (parent->l.load(mor) != curr) return false; //right
+            std::lock_guard lock1(parent->mtx);
+            if (parent->isUnlinked()) return false;
+            if (parent->l.load(mor) != curr) return false; //right
 
-        std::lock_guard lock2(curr->mtx);
-        if (curr->isUnlinked()) return true;//удалился сам
-        if (curr->p.load(mor) != parent) return false;//not
-        Node *curr_l = curr->l.load(mor);//deleted?
-        Node *curr_r = curr->r.load(mor);
-        int n_children = (curr_l != nullptr)
-                         + (curr_r != nullptr);
-        if (n_children != 2) return false;
+            std::lock_guard lock2(curr->mtx);
+            if (curr->isUnlinked()) return true;//удалился сам
+            if (curr->p.load(mor) != parent) return false;//not
+            Node *curr_l = curr->l.load(mor);//deleted?
+            Node *curr_r = curr->r.load(mor);
+            int n_children = (curr_l != nullptr)
+                             + (curr_r != nullptr);
+            if (n_children != 2) return false;
 
-        Node *next = guard_array.protect(2, curr->next);
-        Node *prev = guard_array.protect(3, curr->prev);
-        if (next == curr_r) {
+            Node *next = guard_array.protect(2, curr->next);
+            Node *prev = guard_array.protect(3, curr->prev);
+            if (next == curr_r) {
 //            std::lock_guard lock3(next->mtx);
-            std::unique_lock lock3(next->mtx);
-            if (next == end_ptr) lock3.unlock();
+                std::unique_lock lock3(next->mtx);
+                if (next == end_ptr) lock3.unlock();
 
-            if (next->l.load(mor) != nullptr) return false;
-            std::lock_guard lo_lock1(prev->lo_mtx);
-            std::lock_guard lo_lock2(curr->lo_mtx);
-            std::lock_guard lo_lock3(next->lo_mtx);
-            if (next->isUnlinked()) return false;
-            if (prev->isUnlinked()) return false;
-            if (curr->next.load(mor) != next) return false;
-            if (curr->prev.load(mor) != prev) return false;
+                if (next->l.load(mor) != nullptr) return false;
+                std::lock_guard lo_lock1(prev->lo_mtx);
+                std::lock_guard lo_lock2(curr->lo_mtx);
+                std::lock_guard lo_lock3(next->lo_mtx);
+                if (next->isUnlinked()) return false;
+                if (prev->isUnlinked()) return false;
+                if (curr->next.load(mor) != next) return false;
+                if (curr->prev.load(mor) != prev) return false;
 
-            curr->unlink();
+                curr->unlink();
 
-            prev->next.store(next, mor);
-            next->prev.store(prev, mor);
+                prev->next.store(next, mor);
+                next->prev.store(prev, mor);
 
-            next->l.store(curr_l, mor);
-            curr_l->p.store(next, mor);
+                next->l.store(curr_l, mor);
+                curr_l->p.store(next, mor);
 
-            parent->l.store(next, mor);
-            next->p.store(parent, mor);
-        } else {
-            Node *next_p = guard_array.protect(4, next->p);
-            if (next_p == nullptr || next_p->isUnlinked()) return false;
-            std::lock_guard lock3(next_p->mtx);
-            if (next_p->isUnlinked()) return false;
-            if (next_p->l.load(mor) != next) return false;
-            std::lock_guard lock4(next->mtx);
-            if (next->p.load(mor) != next_p) return false;
-            if (next->l.load(mor) != nullptr) return false;
+                parent->l.store(next, mor);
+                next->p.store(parent, mor);
+            } else {
+                Node *next_p = guard_array.protect(4, next->p);
+                if (next_p == nullptr || next_p->isUnlinked()) return false;
+                std::lock_guard lock3(next_p->mtx);
+                if (next_p->isUnlinked()) return false;
+                if (next_p->l.load(mor) != next) return false;
+                std::lock_guard lock4(next->mtx);
+                if (next->p.load(mor) != next_p) return false;
+                if (next->l.load(mor) != nullptr) return false;
 
-            std::lock_guard lo_lock1(prev->lo_mtx);
-            std::lock_guard lo_lock2(curr->lo_mtx);
-            std::lock_guard lo_lock3(next->lo_mtx);
-            if (next->isUnlinked()) return false;
-            if (prev->isUnlinked()) return false;
-            if (curr->next.load(mor) != next) return false;
-            if (curr->prev.load(mor) != prev) return false;
+                std::lock_guard lo_lock1(prev->lo_mtx);
+                std::lock_guard lo_lock2(curr->lo_mtx);
+                std::lock_guard lo_lock3(next->lo_mtx);
+                if (next->isUnlinked()) return false;
+                if (prev->isUnlinked()) return false;
+                if (curr->next.load(mor) != next) return false;
+                if (curr->prev.load(mor) != prev) return false;
 
-            curr->unlink();
+                curr->unlink();
 
-            prev->next.store(next, mor);
-            next->prev.store(prev, mor);
+                prev->next.store(next, mor);
+                next->prev.store(prev, mor);
 
-            Node *next_r = next->r.load(mor);
-            next_p->l.store(next_r, mor);
-            if (next_r) { next_r->p.store(next_p, mor); }
+                Node *next_r = next->r.load(mor);
+                next_p->l.store(next_r, mor);
+                if (next_r) { next_r->p.store(next_p, mor); }
 
-            next->l.store(curr_l, mor);
-            next->r.store(curr_r, mor);
-            if (curr_l) curr_l->p.store(next, mor);
-            if (curr_r) curr_r->p.store(next, mor);
+                next->l.store(curr_l, mor);
+                next->r.store(curr_r, mor);
+                if (curr_l) curr_l->p.store(next, mor);
+                if (curr_r) curr_r->p.store(next, mor);
 
-            parent->l.store(next, mor);
-            next->p.store(parent, mor);
+                parent->l.store(next, mor);
+                next->p.store(parent, mor);
+            }
         }
-    }
         cds::gc::HP::retire<NodeDisposer>(curr);
         return true;
     }
@@ -800,7 +851,7 @@ public:
             int n_children = (curr->l.load(mor) != nullptr)
                              + (curr->r.load(mor) != nullptr);
             bool result;
-            if(comp(curr->value, parent->value)){
+            if(comp(curr->key, parent->key)){
                 if(n_children == 0) result = erase_left_zero(ga, parent, curr);else
                 if(n_children == 1) result = erase_left_one(ga, parent, curr);else
                 if(n_children == 2) result = erase_left_two(ga, parent, curr);
@@ -828,7 +879,7 @@ public:
             if(next == begin){
                 break;
             }
-            if(curr->value <= next->value){
+            if(curr->key <= next->key){
                 c++;
                 throw "error";
             }
@@ -867,10 +918,10 @@ public:
             return;
         }
         check_heights(curr->l.load());
-        if(curr->value <= last){
+        if(curr->key <= last){
             er++;
         }
-        last = curr->value;
+        last = curr->key;
         check_heights(curr->r.load());
 //        curr->recalculate_height();
 
@@ -880,4 +931,6 @@ public:
         check_heights(header.load());
     }
 };
-#endif //BACHELOR_CONCURRENTAVL_LO_H
+
+
+#endif //BACHELOR_CONCURRENT_AVL_LO_H
