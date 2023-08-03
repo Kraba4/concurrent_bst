@@ -9,7 +9,7 @@
 #include <mutex>
 #include <cds/sync/spinlock.h>
 #include <cds/gc/hp.h>
-#define mor std::memory_order_relaxed
+#define mor std::memory_order_seq_cst
 template <typename Key, typename Compare = std::less<Key>, typename Alloc = std::allocator<Key>>
 class ConcurrentAVL_LO_old{
     struct Node{

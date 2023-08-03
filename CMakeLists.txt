@@ -9,4 +9,4 @@ link_directories(${CMAKE_CURRENT_SOURCE_DIR}/libs)
 link_libraries(cds)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-add_executable(bachelor main.cpp ConcurrentPartiallyExternalTree.h Old.h ConcurrentAVL.h Allocator.h Allocator.cpp Utils.h ConcurrentAVL_LO_old.h correctness_test.cpp Concurrent_AVL_LO.h)
+add_executable(bachelor main.cpp ConcurrentPartiallyExternalTree.h ConcurrentAVL.h ConcurrentAVL_LO_old.h Concurrent_AVL_LO.h)

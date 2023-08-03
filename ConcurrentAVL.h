@@ -180,7 +180,7 @@ public:
                 parent->r.store(Node::createNode(alloc, key, parent), std::memory_order_seq_cst);
             }
         }
-        fix(parent);
+//        fix(parent);
         return true;
     }
     bool insert_existing_node(Node* curr, const Key& key){
@@ -760,6 +760,7 @@ public:
             }else{
                 if(parent!=nullptr) {
                     std::lock_guard lock1(parent->mtx);
+                    if(parent->l.load() != curr && parent->r.load()!= curr) continue;
                     std::lock_guard lock2(curr->mtx);
                     curr = fix_balance(ga, curr, parent);
                 }else{
